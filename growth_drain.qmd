@@ -1,0 +1,259 @@
+---
+title: 'Calculating growth-to-drain ratios from forest inventory data'
+description: "There's no better way to understand harvest sustainability across a region than to calculate the growth/drain ratio."
+date: 11-25-2024
+categories: [Forest growth, growth and yield, forest measurements] 
+image: log_truck.jpg
+draft: false 
+---
+
+<center>
+![](log_truck.jpg "A truck carrying a load of logs on a highway."){width=250px}  
+</center>
+# 
+
+One of the most effective metrics to assess the sustainability of harvesting practices in a forest region is the **growth/drain ratio**. It is calculated by dividing the growth of a forest attribute by the amount removed through harvests, i.e., "drained". The same units, geographic area, and time period (e.g., annual) are required to make the calculation.
+
+A growth/drain ratio of 1 indicates harvest removals equal to forest growth, i.e., a sustainable harvest level is reached. A growth/drain ratio greater than 1 indicates forest growth that exceeds harvest levels, and a ratio less than 1 indicates harvests that exceed growth. (Not sustainable in the long term.) For example, a growth/drain ratio of 1.5 indicates 1.5 times as much volume/biomass would grow over a time period than was harvested.  
+
+[Net growth](https://arbor-analytics.com/post/2024-10-16-components-of-forest-growth-a-case-study-with-carbon/) is commonly used when calculating growth/drain ratios, as it represents forest growth over a specified growth period after deducting mortality. Removals are commonly measured as forest volume or biomass and are expressed in the same units and time period as growth.
+
+As a case study, consider the US state of Minnesota. The Forest Inventory and Analysis program of the USDA Forest Service has been collecting information across thousands of plots in Minnesota forests, so we have data to determine growth/drain ratios for a variety of conditions across the state. 
+
+For units, we'll use the average annual net growth and removals of aboveground tree biomass (all trees at least 1-inch in diameter). Data were collected from 2018 through 2022. 
+
+Say we're interested in the four primary ownerships within the state. Harvests removals generally occurred on less than 10% of all plots, with growth/drain ratios ranging from 1.52 on State-owned lands to 3.67 on private ownerships: 
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+library(tidyverse)
+library(httr)
+library(jsonlite)
+library(rlist)
+library(knitr)
+library(formattable)
+library(kableExtra)
+library(urbnmapr)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# fiadb_api_POST() will accept a FIADB-API full report URL and return data frames
+# See descriptor: https://apps.fs.usda.gov/fiadb-api/
+
+fiadb_api_POST <- function(argList){
+  # make request
+  resp <- POST(url="https://apps.fs.usda.gov/fiadb-api/fullreport", 
+               body=argList, encode="form")
+  # parse response from JSON to R list
+  respObj <- content(resp, "parsed", encoding = "ISO-8859-1")
+  # create empty output list
+  outputList <- list()
+  # add estimates data frame to output list
+  outputList[['estimates']] <- as.data.frame(do.call(rbind,respObj$estimates))
+
+  # if estimate includes totals and subtotals, add those data frames to output list
+  if ('subtotals' %in% names(respObj)){
+    subtotals <- list()
+    # one subtotal data frame for each grouping variable
+    for (i in names(respObj$subtotals)){
+      subtotals[[i]] <- as.data.frame(do.call(rbind,respObj$subtotals[[i]]))
+    }
+    outputList[['subtotals']] <- subtotals
+
+    # totals data frame
+    outputList[['totals']] <- as.data.frame(do.call(rbind,respObj$totals))
+  }
+
+  # add estimate metadata
+  outputList[['metadata']] <- respObj$metadata
+
+  return(outputList)
+}
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# snum = 314 (Average annual net growth of aboveground biomass of trees 
+# (at least 1 inch d.b.h./d.r.c.), in dry short tons, on timberland
+
+arg_list <- list(snum = 314,
+                 wc = 272022 ,
+                 rselected = 'State code',
+                 cselected = 'Ownership class',
+                 outputFormat = 'NJSON')
+
+# submit list to POST request function
+post_data <- fiadb_api_POST(arg_list)
+
+# estimate data frame
+net_growth <- post_data[['estimates']]
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+net_growth2 <- as_tibble(net_growth) |>  
+  mutate(net_growth = round(as.numeric(ESTIMATE), 0),
+         state_name = str_sub(as.character(GRP1), 10),
+         num_plots_growth = as.numeric(PLOT_COUNT),
+         own_group = str_sub(as.character(GRP2), 7)) |> 
+  select(own_group, num_plots_growth, net_growth) |> 
+    filter(own_group %in% c("National Forest", "State", 
+                          "County and Municipal", "Private"))
+```
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# snum = 372 Average annual removals of aboveground biomass of trees
+# (at least 1 inch d.b.h./d.r.c.), in dry short tons, on timberland
+
+arg_list <- list(snum = 372,
+                 wc = 272022 ,
+                 rselected = 'State code',
+                 cselected = 'Ownership class',
+                 outputFormat = 'NJSON')
+
+# submit list to POST request function
+post_data <- fiadb_api_POST(arg_list)
+
+# estimate data frame
+removal <- post_data[['estimates']]
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+removal2 <- as_tibble(removal) |>  
+  mutate(removals = round(as.numeric(ESTIMATE), 0),
+         state_name = str_sub(as.character(GRP1), 10),
+         num_plots_removals = as.numeric(PLOT_COUNT),
+         own_group = str_sub(as.character(GRP2), 7)) |> 
+  select(own_group, num_plots_removals, removals) |> 
+  filter(own_group %in% c("National Forest", "State", 
+                          "County and Municipal", "Private"))
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+growth_drain <- inner_join(net_growth2, removal2, 
+                           by = c("own_group")) |> 
+  mutate(ratio = round(net_growth / removals, 2))
+```
+
+```{r echo = F, warning = F, message = F}
+growth_drain |> 
+  rename(Ownership = own_group,
+         `Num plots (growth)` = num_plots_growth,
+         `Num plots (removals)` = num_plots_removals,
+         `Net growth (US tons)` = net_growth,
+         `Removals (US tons)` = removals,
+         `Growth: drain ratio` = ratio) |> 
+  kable("html", 
+        format.args = list(big.mark = ","),
+        caption = 'Growth-to-drain ratios for Minnesota ownerships, 2018-2022.') %>%
+ kable_styling()
+```
+
+Ratios indicate growth exceeded removals over this time period, in particular on private lands and National Forests. Forestry professionals from outside the region might be surprised to see that growth/drain ratios on public lands are lower than on private lands. (Opposite trends exist in the southeastern US). Publicly-owned forests managed by the state and counties are some of the most [intensively-managed ones in Minnesota](https://www.dnr.state.mn.us/aboutdnr/school_lands/index.html). 
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# snum = 314 (Average annual net growth of aboveground biomass of trees 
+# (at least 1 inch d.b.h./d.r.c.), in dry short tons, on timberland
+
+arg_list <- list(snum = 314,
+                 wc = 272022 ,
+                 rselected = 'State code',
+                 cselected = 'County code and name',
+                 outputFormat = 'NJSON')
+
+# submit list to POST request function
+post_data <- fiadb_api_POST(arg_list)
+
+# estimate data frame
+net_growth <- post_data[['estimates']]
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+net_growth2 <- as_tibble(net_growth) |>  
+  mutate(net_growth =  round(as.numeric(ESTIMATE), 0),
+         state_name = str_sub(as.character(GRP1), 10),
+         num_plots_growth = as.numeric(PLOT_COUNT),
+         county_name = str_sub(as.character(GRP2), 17),
+         fips = as.numeric(str_sub(GRP2, 2, 6))) |> 
+  select(county_name, fips, num_plots_growth, net_growth)
+```
+
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# snum = 372 Average annual removals of aboveground biomass of trees
+# (at least 1 inch d.b.h./d.r.c.), in dry short tons, on timberland
+
+arg_list <- list(snum = 372,
+                 wc = 272022 ,
+                 rselected = 'State code',
+                 cselected = 'County code and name',
+                 outputFormat = 'NJSON')
+
+# submit list to POST request function
+post_data <- fiadb_api_POST(arg_list)
+
+# estimate data frame
+removal <- post_data[['estimates']]
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+removal2 <- as_tibble(removal) |>  
+  mutate(removals =  round(as.numeric(ESTIMATE), 0),
+         state_name = str_sub(as.character(GRP1), 10),
+         num_plots_removals = as.numeric(PLOT_COUNT),       
+         county_name = str_sub(as.character(GRP2), 17)) |>  
+  select(county_name, num_plots_removals, removals)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+growth_drain_county <- inner_join(net_growth2, removal2, 
+                           by = c("county_name")) |> 
+  mutate(ratio = round(net_growth / removals, 2))
+```
+
+We can also visualize growth/drain ratios by county to see geographic differences. The following map is limited to counties that showed a minimum of nine harvest events occurring in the county (all which are located in the northeastern region of the state). Counties in red show a growth/drain ratio closer to 1:
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+states_sf <- get_urbn_map(map = "states", sf = TRUE)
+counties_sf <- get_urbn_map(map = "counties", sf = TRUE)
+
+growth_drain_county |> 
+  filter(num_plots_removals >= 9) |> 
+  mutate(county_fips = as.character(fips)) |> 
+    left_join(counties, by = "county_fips") %>% 
+ ggplot(mapping = aes(long, lat, group = group, fill = ratio)) +
+  geom_polygon(color = "black", size = .25) +
+  scale_fill_gradientn(guide = guide_colorbar(title.position = "top"),
+                       colours = heat.colors(10)) +
+  coord_map(projection = "albers", lat0 = 39, lat1 = 45) +
+  theme(legend.title = element_text(),
+        legend.key.width = unit(.5, "in")) +
+  labs(fill = "Growth: drain ratio") +
+  labs (y = "Latitude", x = "Longitude") +
+  theme_bw() 
+```
+
+We can see that growth drain ratios ranged from 0.77 (Aitkin County) to 4.89 (Cook County):
+
+```{r echo = F, warning = F, message = F}
+growth_drain_county |> 
+  filter(num_plots_removals >= 9)  |> 
+  rename(County = county_name,
+         `Num plots (growth)` = num_plots_growth,
+         `Num plots (removals)` = num_plots_removals,
+         `Net growth (US tons)` = net_growth,
+         `Removals (US tons)` = removals,
+         `Growth: drain ratio` = ratio) |>
+  select(-fips) |> 
+  kable("html", 
+        format.args = list(big.mark = ","),
+        caption = 'Growth-to-drain ratios for Minnesota by county, 2018-2022.') %>%
+ kable_styling()
+```
+
+A caveat with the growth/drain ratio is how it can be sensitive to imbalances in age class distributions. For example, growth/drain ratios may be lower if a large portion of the resource is at or near a typical age for management (e.g., a rotation age). Growth/drain ratios may be greater if fewer acres are available to be harvested, and those stands may be younger with greater growth rates. Despite this, use the growth/drain ratio to get a sense of the harvest practices in your own region.
+
+*For the R code used to access these data and produce these figures using FIA's EVALIDator API, [see here]()*
+
+--
+
+*By Matt Russell.  For more, subscribe to my [monthly email newsletter](https://mailchi.mp/d96897dc0f46/arbor-analytics) to stay ahead on data and analytics trends in the forest products industry.*
